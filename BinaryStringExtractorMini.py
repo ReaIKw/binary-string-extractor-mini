@@ -2,6 +2,7 @@
 import os
 import sys
 import threading
+import re
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QSpinBox, QTextEdit, QGroupBox,
@@ -195,6 +196,27 @@ class BinaryStringExtractorApp(QMainWindow):
         filter_layout.addWidget(self.utf16be_cb, 0, 6)
         main_layout.addWidget(filter_group)
 
+        # --- Advanced Filtering Options ---
+        adv_filter_group = QGroupBox("Advanced Filtering")
+        adv_filter_layout = QGridLayout()
+        adv_filter_group.setLayout(adv_filter_layout)
+        adv_filter_layout.setHorizontalSpacing(16)
+        adv_filter_layout.setVerticalSpacing(8)
+        adv_filter_layout.addWidget(QLabel("Exclude Patterns (comma or regex):"), 0, 0)
+        self.exclude_patterns_edit = QLineEdit()
+        self.exclude_patterns_edit.setPlaceholderText(r"e.g. password,secret,\\d{8,}")
+        adv_filter_layout.addWidget(self.exclude_patterns_edit, 0, 1, 1, 3)
+        self.require_alpha_cb = QCheckBox("Require at least one letter")
+        self.require_alpha_cb.setChecked(True)
+        adv_filter_layout.addWidget(self.require_alpha_cb, 1, 0)
+        self.exclude_hex_cb = QCheckBox("Exclude hex/base64-like strings")
+        self.exclude_hex_cb.setChecked(True)
+        adv_filter_layout.addWidget(self.exclude_hex_cb, 1, 1)
+        self.use_regex_cb = QCheckBox("Use regex for patterns")
+        self.use_regex_cb.setChecked(False)
+        adv_filter_layout.addWidget(self.use_regex_cb, 1, 2)
+        main_layout.addWidget(adv_filter_group)
+
         # Extract button
         self.extract_btn = QPushButton("Extract Strings")
         self.extract_btn.setIcon(QIcon.fromTheme("system-search"))
@@ -346,14 +368,43 @@ class BinaryStringExtractorApp(QMainWindow):
 
     def display_results(self, results):
         self.results = results
-        if not results:
+        # --- Filtering logic ---
+        exclude_patterns = [p.strip() for p in self.exclude_patterns_edit.text().split(',') if p.strip()]
+        require_alpha = self.require_alpha_cb.isChecked()
+        exclude_hex = self.exclude_hex_cb.isChecked()
+        use_regex = self.use_regex_cb.isChecked()
+        def is_interesting(s):
+            # Exclude if matches any pattern
+            if exclude_patterns:
+                for pat in exclude_patterns:
+                    try:
+                        if use_regex:
+                            if re.search(pat, s):
+                                return False
+                        else:
+                            if pat.lower() in s.lower():
+                                return False
+                    except Exception:
+                        continue
+            # Exclude if no letters
+            if require_alpha and not re.search(r'[A-Za-z]', s):
+                return False
+            # Exclude if looks like hex/base64
+            if exclude_hex:
+                if re.fullmatch(r'[0-9A-Fa-f]+', s) and len(s) > 8:
+                    return False
+                if re.fullmatch(r'[A-Za-z0-9+/=]+', s) and len(s) > 12:
+                    return False
+            return True
+        filtered = [(offset, encoding, string) for offset, encoding, string in results if is_interesting(string)]
+        if not filtered:
             self.results_edit.setPlainText("No strings found with the selected criteria.")
             self.save_btn.setEnabled(False)
         else:
-            lines = [f"0x{offset:X}: [{encoding}] {string}" for offset, encoding, string in results]
+            lines = [f"0x{offset:X}: [{encoding}] {string}" for offset, encoding, string in filtered]
             self.results_edit.setPlainText("\n".join(lines))
             self.save_btn.setEnabled(True)
-        self.status.showMessage(f"Extraction complete. {len(results)} strings found.")
+        self.status.showMessage(f"Extraction complete. {len(filtered)} strings found.")
 
     def show_error(self, msg):
         QMessageBox.critical(self, "Error", msg)
